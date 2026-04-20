@@ -180,8 +180,8 @@ All versions tested against the same task: extract `TOTAL` from a local text inv
 | `orch_refactor_stable` (V1) | ✅ Pass | 6 | ~2-3 min | DOM attempted first (failed — Excel Online uses canvas), pivoted to vision |
 | `orch_refactor_stable_2` (V2) | ✅ Pass | 5 | ~2-3 min | Policy brain skipped DOM entirely — 1 fewer LLM call than V1 |
 | `orch_refactor_stable_3` (V3) | ✅ Pass | 6 | ~2-3 min | Task-agnostic world state; per-step `log_world()` output |
-| `orch_refactor_langraph` | ✅ Pass | 6 | ~5-6 min | Needs fixes before running (see below) |
-| `orch_refactor_semantic_kernel` | ✅ Pass | 7 | ~5-6 min | Needs fixes before running (see below) |
+| `orch_refactor_langraph` | ✅ Pass | 6 | ~5-6 min | Compiled `StateGraph` with `ToolNode`; output buffered until graph completes |
+| `orch_refactor_semantic_kernel` | ✅ Pass | 7 | ~5-6 min | SK `Kernel` + `AzureChatCompletion`; `async_playwright` for browser; plugins called as direct instance methods |
 | `orch_refactor_wip.py` | — | — | — | Work-in-progress scratch file — not a runnable orchestrator |
 
 ---
