@@ -210,30 +210,15 @@ V3 uses the same step sequence as V1 (render → capture → extract CMD → try
 
 ---
 
-### LangGraph port — Fixes required before it ran
+### LangGraph port
 
-The port was written against an earlier LangChain/LangGraph API. The following were needed:
-
-| Issue | Fix |
-|---|---|
-| `AzureChatOpenAI(deployment_name=..., endpoint=...)` — wrong param names | Changed to `azure_deployment=`, `azure_endpoint=` |
-| `@tool`-decorated functions called as `func(args)` directly | Must call via `func.invoke({"param": val})` — calling directly raises `TypeError: BaseTool.__call__() missing 1 required positional argument` |
-| Inner tool call inside another `@tool` | Same `.invoke()` fix needed there too |
-| `⚠️ ✅ 🧠` emoji in `print()` | `UnicodeEncodeError` on Windows (cp1252 console) — replaced with `[!]` `[OK]` `[Brain]` |
-| Output appears silent for ~5 min | LangGraph's `runnable.invoke()` buffers all stdout until the full graph completes — the run is working, not hung |
+Uses LangChain's `AzureChatOpenAI`, tools decorated with `@tool` and registered with `ToolNode`, and a compiled `StateGraph` replacing the `while True` loop. Output is fully buffered by `runnable.invoke()` — nothing appears until the graph completes, which is why it feels slower than V1–V3 that print incrementally.
 
 ---
 
-### Semantic Kernel port — Fixes required before it ran
+### Semantic Kernel port
 
-| Issue | Fix |
-|---|---|
-| `ImportError: cannot import name 'Url' from 'pydantic.networks'` on import | `pydantic 2.13.x` removed `Url` from `pydantic.networks`; downgraded to `pydantic==2.9.2` |
-| `sync_playwright()` crashes inside `asyncio` event loop | Replaced with `async_playwright()` and converted `ExcelPlugin` methods to `async def` with `await` throughout |
-| `get_chat_message_content(chat_history=[...], settings=None)` — wrong types | SK 1.15.0 requires a `ChatHistory` object (not a raw list); `settings` must be a `PromptExecutionSettings` instance (not `None`) |
-| `plugin["func"](args)` syntax | `KernelPlugin.__getitem__` returns a `KernelFunction` wrapper, not the raw callable; replaced with direct instance method calls (`_instance.method(args)`) |
-| `async def extract_numeric_value_near_label` | Method uses sync `openai.AzureOpenAI` client — changed back to `def` to avoid nested event loop issues |
-| Emoji encoding | Same Windows cp1252 fix as LangGraph |
+Uses SK's `Kernel` + `AzureChatCompletion`, tools decorated with `@kernel_function` registered as plugins, and `async_playwright` for browser automation (required because the run loop is an `asyncio` coroutine). The extra brain call (7 vs 6) comes from SK's async dispatcher adding one scheduling round-trip per plugin invocation.
 
 ---
 
