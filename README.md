@@ -163,6 +163,30 @@ The key architectural leaps:
 
 ---
 
+## Test Run Results
+
+All versions tested against the same task: extract `TOTAL` from a local invoice via CMD screenshot + vision, extract `FV` from Excel Online, compare within tolerance 0.01.
+
+| Version | Result | Brain calls | Notes |
+|---|---|---|---|
+| `orchestration_example` (V0) | ❌ Crashed | 1 | Naive JSON parser — crashes when LLM returns markdown-wrapped or empty response |
+| `orch_refactor_stable` (V1) | ✅ Pass | 6 | Tried DOM first (failed, Excel Online uses canvas), correctly pivoted to vision |
+| `orch_refactor_stable_2` (V2) | ✅ Pass | 5 | Policy brain skipped DOM entirely — went straight to vision. One fewer LLM call than V1 |
+| `orch_refactor_stable_3` (V3) | ✅ Pass | 6 | Task-agnostic world state; clean per-step log via `log_world()` |
+| `orch_refactor_langraph` | ✅ Pass | 6 | Required fixes: `azure_deployment`/`azure_endpoint` param rename, `.invoke()` on all `@tool` calls, emoji encoding (Windows cp1252). **~5-6 min vs ~2-3 min for V1-V3** |
+| `orch_refactor_semantic_kernel` | — | — | Not yet tested |
+
+### Why LangGraph is slower
+
+The task work (browser, vision API) takes the same time across all versions. LangGraph adds overhead from:
+- **Pregel runtime**: every action goes through the graph scheduler and task queue on each node
+- **LangChain callback pipeline**: `@tool` calls fire tracing/callback hooks even when unused
+- **Buffered output**: `runnable.invoke()` blocks until the full graph completes — output only appears at the end, making the run *feel* much longer than V1–V3 which print incrementally
+
+This is the trade-off for LangGraph's benefits: checkpointing, graph observability, and built-in retry logic.
+
+---
+
 ## Dependencies
 
 | Package | Purpose |
