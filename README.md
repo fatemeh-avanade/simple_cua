@@ -2,6 +2,19 @@
 
 A collection of experiments for building **hybrid LLM-brained computer use agents** — autonomous orchestrators that combine GPT-4o vision, browser automation (Playwright), terminal interaction (pyautogui), and structured world state to complete multi-step desktop tasks.
 
+### What it demos
+
+The concrete CUA task demonstrated throughout is a **cross-source data reconciliation agent**:
+
+1. The agent is given a natural language goal: *"Find TOTAL in this invoice file and FV in this Excel workbook, and check whether they match within tolerance."*
+2. It opens the invoice in a Command Prompt window, takes a screenshot, and uses GPT-4o vision to extract the numeric value.
+3. It opens the Excel Online workbook in a browser (via Playwright + Edge), attempts DOM extraction, and falls back to a full-page screenshot + GPT-4o vision when the spreadsheet renders as a canvas.
+4. It compares the two values within the specified tolerance and reports the result.
+
+The agent is **LLM-brained**: there is no hardcoded step sequence. On every tick, the LLM is given the current world state and recent action history, and decides what to do next. The same agent loop handles DOM failure, vision fallback, and the final comparison without any hand-written branching logic.
+
+The `hybrid_orchestration_demo` folder shows how this agent evolves across 6 implementations — from a naive prototype to clean framework-agnostic architecture, then ported to LangGraph and Semantic Kernel.
+
 ---
 
 ## Quick Start
