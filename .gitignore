@@ -1,0 +1,51 @@
+# Environment & secrets
+.env
+.env.*
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Poetry
+poetry.lock
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data files
+*.csv
+*.json
+*.xlsx
+*.xls
+*.parquet
+*.db
+*.sqlite
+data/
+
+# Images & media
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

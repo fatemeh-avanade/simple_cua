@@ -1,0 +1,30 @@
+[project]
+name = "simple-cua"
+version = "0.1.0"
+description = "Computer use agent testing project"
+authors = [
+    {name = "Your Name", email = "you@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "playwright>=1.40.0",
+    "pandas>=2.0.0",
+    "pyautogui>=0.9.54",
+    "pillow>=10.0.0",
+    "pygetwindow>=0.0.9",
+    "langchain>=0.2.0",
+    "langchain-core>=0.2.0",
+    "langchain-openai>=0.1.0",
+    "langgraph>=0.1.0",
+    "semantic-kernel>=1.0.0",
+]
+
+[tool.poetry]
+packages = [{include = "simple_cua", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
