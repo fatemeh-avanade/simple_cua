@@ -165,32 +165,93 @@ The key architectural leaps:
 
 ## Test Run Results
 
-All versions tested against the same task: extract `TOTAL` from a local invoice via CMD screenshot + vision, extract `FV` from Excel Online, compare within tolerance 0.01.
+All versions tested against the same task: extract `TOTAL` from a local text invoice via CMD screenshot + vision, extract `FV` from an Excel Online workbook, compare within tolerance 0.01.
 
-| Version | Result | Brain calls | Notes |
-|---|---|---|---|
-| `orchestration_example` (V0) | ❌ Crashed | 1 | Naive JSON parser — crashes when LLM returns markdown-wrapped or empty response |
-| `orch_refactor_stable` (V1) | ✅ Pass | 6 | Tried DOM first (failed, Excel Online uses canvas), correctly pivoted to vision |
-| `orch_refactor_stable_2` (V2) | ✅ Pass | 5 | Policy brain skipped DOM entirely — went straight to vision. One fewer LLM call than V1 |
-| `orch_refactor_stable_3` (V3) | ✅ Pass | 6 | Task-agnostic world state; clean per-step log via `log_world()` |
-| `orch_refactor_langraph` | ✅ Pass | 6 | Required fixes: `azure_deployment`/`azure_endpoint` param rename, `.invoke()` on all `@tool` calls, emoji encoding (Windows cp1252). **~5-6 min vs ~2-3 min for V1-V3** |
-| `orch_refactor_semantic_kernel` | ✅ Pass | 7 | Required fixes: pydantic downgrade to 2.9.2, `sync_playwright` → `async_playwright` (can't use sync API inside asyncio loop), `ChatHistory` object for SK chat API, direct method calls instead of `plugin["func"]()` syntax. Similar timing to LangGraph (~5-6 min) due to async scheduling overhead |
+**Verified output (all passing versions):**
+```json
+{ "match": true, "cmd_value": 1240.5, "excel_value": 1240.5 }
+```
 
-### Why LangGraph is slower
+### Summary table
 
-The task work (browser, vision API) takes the same time across all versions. LangGraph adds overhead from:
-- **Pregel runtime**: every action goes through the graph scheduler and task queue on each node
-- **LangChain callback pipeline**: `@tool` calls fire tracing/callback hooks even when unused
-- **Buffered output**: `runnable.invoke()` blocks until the full graph completes — output only appears at the end, making the run *feel* much longer than V1–V3 which print incrementally
+| Version | Result | Brain calls | Duration | Notes |
+|---|---|---|---|---|
+| `orchestration_example` (V0) | ❌ Crashed | 1 | <1s | Naive JSON parser crashes on markdown-wrapped LLM response |
+| `orch_refactor_stable` (V1) | ✅ Pass | 6 | ~2-3 min | DOM attempted first (failed — Excel Online uses canvas), pivoted to vision |
+| `orch_refactor_stable_2` (V2) | ✅ Pass | 5 | ~2-3 min | Policy brain skipped DOM entirely — 1 fewer LLM call than V1 |
+| `orch_refactor_stable_3` (V3) | ✅ Pass | 6 | ~2-3 min | Task-agnostic world state; per-step `log_world()` output |
+| `orch_refactor_langraph` | ✅ Pass | 6 | ~5-6 min | Needs fixes before running (see below) |
+| `orch_refactor_semantic_kernel` | ✅ Pass | 7 | ~5-6 min | Needs fixes before running (see below) |
+| `orch_refactor_wip.py` | — | — | — | Work-in-progress scratch file — not a runnable orchestrator |
 
-This is the trade-off for LangGraph's benefits: checkpointing, graph observability, and built-in retry logic.
+---
 
-### Why Semantic Kernel is slower
+### V0 — Why it crashed
 
-Similar pattern to LangGraph:
-- **Async event loop overhead**: all plugin calls go through SK's async scheduler even for synchronous tools
-- **Kernel service resolution**: each `get_service()` call traverses the kernel registry
-- **Buffered output**: like LangGraph, `asyncio.run()` holds all output until completion
+`orchestration_example.py` calls `json.loads()` directly on the raw LLM response string. GPT-4o frequently wraps its output in markdown fences (` ```json ... ``` `) or returns explanatory prose around the JSON. With no stripping or regex fallback, the first `json.loads()` raises a `JSONDecodeError` and the script exits immediately. All later versions fix this with `safe_json_parse()`, which strips markdown fences and uses a regex to extract the JSON object.
+
+---
+
+### V1/V3 — Why DOM always fails on Excel Online
+
+Excel Online renders spreadsheet content using a `<canvas>` element and a virtualized grid — there are no actual `<td>` or `<span>` elements in the DOM containing cell values. The DOM probe in `extract_excel_value_dom` queries `div, span, td, [role="gridcell"]` but finds nothing matching the label. V1 and V3 correctly detect the `not_found` status and the brain pivots to the vision fallback. V2's policy brain learns from the history context that DOM failed previously and skips straight to vision on the next attempt.
+
+---
+
+### V2 — Why it uses one fewer brain call
+
+V2's brain is a pure policy agent: instead of the orchestrator hardcoding a "try DOM first, then vision" rule, the LLM reasons from recent history. By the time it needs to extract the Excel value, it has already seen that DOM extraction in the current session produced a `not_found` result. It therefore decides to go straight to `extract_excel_vision`, skipping the redundant DOM attempt and saving one full browser launch cycle (~30–60s of network + render time) plus one LLM call.
+
+---
+
+### V3 — Why it uses 6 calls despite task-agnostic state
+
+V3 uses the same step sequence as V1 (render → capture → extract CMD → try DOM → try vision → compare → finish). The task-agnostic `WorldState` doesn't change the number of decisions the brain makes — it just makes the world model extensible. The 6th call is `finish` (the brain must explicitly decide the run is complete).
+
+---
+
+### LangGraph port — Fixes required before it ran
+
+The port was written against an earlier LangChain/LangGraph API. The following were needed:
+
+| Issue | Fix |
+|---|---|
+| `AzureChatOpenAI(deployment_name=..., endpoint=...)` — wrong param names | Changed to `azure_deployment=`, `azure_endpoint=` |
+| `@tool`-decorated functions called as `func(args)` directly | Must call via `func.invoke({"param": val})` — calling directly raises `TypeError: BaseTool.__call__() missing 1 required positional argument` |
+| Inner tool call inside another `@tool` | Same `.invoke()` fix needed there too |
+| `⚠️ ✅ 🧠` emoji in `print()` | `UnicodeEncodeError` on Windows (cp1252 console) — replaced with `[!]` `[OK]` `[Brain]` |
+| Output appears silent for ~5 min | LangGraph's `runnable.invoke()` buffers all stdout until the full graph completes — the run is working, not hung |
+
+---
+
+### Semantic Kernel port — Fixes required before it ran
+
+| Issue | Fix |
+|---|---|
+| `ImportError: cannot import name 'Url' from 'pydantic.networks'` on import | `pydantic 2.13.x` removed `Url` from `pydantic.networks`; downgraded to `pydantic==2.9.2` |
+| `sync_playwright()` crashes inside `asyncio` event loop | Replaced with `async_playwright()` and converted `ExcelPlugin` methods to `async def` with `await` throughout |
+| `get_chat_message_content(chat_history=[...], settings=None)` — wrong types | SK 1.15.0 requires a `ChatHistory` object (not a raw list); `settings` must be a `PromptExecutionSettings` instance (not `None`) |
+| `plugin["func"](args)` syntax | `KernelPlugin.__getitem__` returns a `KernelFunction` wrapper, not the raw callable; replaced with direct instance method calls (`_instance.method(args)`) |
+| `async def extract_numeric_value_near_label` | Method uses sync `openai.AzureOpenAI` client — changed back to `def` to avoid nested event loop issues |
+| Emoji encoding | Same Windows cp1252 fix as LangGraph |
+
+---
+
+### Why LangGraph and Semantic Kernel are slower
+
+The actual task work (browser automation, vision API round-trip) takes roughly the same time across all versions. The extra time in the framework ports comes from:
+
+**LangGraph:**
+- **Pregel runtime**: every node activation goes through the graph scheduler and task queue
+- **LangChain callback pipeline**: `@tool` calls fire tracing/callback hooks on every invocation, even when no callbacks are registered
+- **Buffered output**: `runnable.invoke()` holds all stdout until the full graph completes — the run looks silent but is working
+
+**Semantic Kernel:**
+- **Async event loop scheduling**: all plugin calls go through SK's async dispatcher, adding overhead even for synchronous tools
+- **Kernel service resolution**: `get_service(type=...)` traverses the kernel registry on every LLM call
+- **Buffered output**: same `asyncio.run()` buffering pattern as LangGraph
+
+For an interactive desktop agent (2-3 min task), this overhead is noticeable but not prohibitive. For high-frequency or latency-sensitive agents it would matter more.
 
 ---
 
