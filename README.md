@@ -174,7 +174,7 @@ All versions tested against the same task: extract `TOTAL` from a local invoice 
 | `orch_refactor_stable_2` (V2) | ✅ Pass | 5 | Policy brain skipped DOM entirely — went straight to vision. One fewer LLM call than V1 |
 | `orch_refactor_stable_3` (V3) | ✅ Pass | 6 | Task-agnostic world state; clean per-step log via `log_world()` |
 | `orch_refactor_langraph` | ✅ Pass | 6 | Required fixes: `azure_deployment`/`azure_endpoint` param rename, `.invoke()` on all `@tool` calls, emoji encoding (Windows cp1252). **~5-6 min vs ~2-3 min for V1-V3** |
-| `orch_refactor_semantic_kernel` | — | — | Not yet tested |
+| `orch_refactor_semantic_kernel` | ✅ Pass | 7 | Required fixes: pydantic downgrade to 2.9.2, `sync_playwright` → `async_playwright` (can't use sync API inside asyncio loop), `ChatHistory` object for SK chat API, direct method calls instead of `plugin["func"]()` syntax. Similar timing to LangGraph (~5-6 min) due to async scheduling overhead |
 
 ### Why LangGraph is slower
 
@@ -184,6 +184,13 @@ The task work (browser, vision API) takes the same time across all versions. Lan
 - **Buffered output**: `runnable.invoke()` blocks until the full graph completes — output only appears at the end, making the run *feel* much longer than V1–V3 which print incrementally
 
 This is the trade-off for LangGraph's benefits: checkpointing, graph observability, and built-in retry logic.
+
+### Why Semantic Kernel is slower
+
+Similar pattern to LangGraph:
+- **Async event loop overhead**: all plugin calls go through SK's async scheduler even for synchronous tools
+- **Kernel service resolution**: each `get_service()` call traverses the kernel registry
+- **Buffered output**: like LangGraph, `asyncio.run()` holds all output until completion
 
 ---
 

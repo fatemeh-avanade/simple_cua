@@ -21,13 +21,15 @@ from typing import Optional, Dict, Any, List, Annotated
 import pyautogui
 import pygetwindow as gw
 from PIL import ImageGrab
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
 from semantic_kernel.functions import kernel_function
 from semantic_kernel.functions.kernel_arguments import KernelArguments
+from semantic_kernel.contents.chat_history import ChatHistory
+from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
 
 
 # ---------------------------------------------------------------------
@@ -61,6 +63,20 @@ kernel.add_service(
 )
 
 
+async def _call_llm(system: str, user: str) -> str:
+    """Call the LLM via SK with a simple 2-message chat."""
+    from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
+    chat_service = kernel.get_service(type=ChatCompletionClientBase)
+    history = ChatHistory()
+    history.add_system_message(system)
+    history.add_user_message(user)
+    response = await chat_service.get_chat_message_content(
+        chat_history=history,
+        settings=PromptExecutionSettings(),
+    )
+    return str(response)
+
+
 # ---------------------------------------------------------------------
 # UTILS (generic)
 # ---------------------------------------------------------------------
@@ -82,7 +98,7 @@ def safe_json_parse(text: str) -> dict:
 
 
 def human_escalation(world: dict, reason: str) -> None:
-    print("\n⚠️ HUMAN ESCALATION REQUIRED")
+    print("\n[!] HUMAN ESCALATION REQUIRED")
     print("Reason:", reason)
     print("World state:")
     print(json.dumps(world, indent=2, default=str))
@@ -131,32 +147,17 @@ class TaskPlugin:
         Extract task parameters from natural language prompt.
         Returns JSON with cmd, excel, and comparison_spec.
         """
-        from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
-        chat_service = kernel.get_service(type=ChatCompletionClientBase)
-        
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Extract task parameters.\n"
-                    "Return ONLY JSON with EXACT schema:\n"
-                    "{\n"
-                    '  "cmd": { "label": string, "file_path": string },\n'
-                    '  "excel": { "label": string, "url": string },\n'
-                    '  "comparison_spec": { "tolerance": number }\n'
-                    "}\n"
-                    "Labels must be literal tokens only (e.g., TOTAL, FV)."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ]
-
-        response = await chat_service.get_chat_message_content(
-            chat_history=[{"role": m["role"], "content": m["content"]} for m in messages],
-            settings=None
+        system = (
+            "Extract task parameters.\n"
+            "Return ONLY JSON with EXACT schema:\n"
+            "{\n"
+            '  "cmd": { "label": string, "file_path": string },\n'
+            '  "excel": { "label": string, "url": string },\n'
+            '  "comparison_spec": { "tolerance": number }\n'
+            "}\n"
+            "Labels must be literal tokens only (e.g., TOTAL, FV)."
         )
-
-        result = response.content
+        result = await _call_llm(system, prompt)
         parsed = safe_json_parse(result)
         parsed["cmd"]["label"] = parsed["cmd"]["label"].strip()
         parsed["excel"]["label"] = parsed["excel"]["label"].strip()
@@ -235,15 +236,13 @@ class VisionPlugin:
     @kernel_function(
         description="Extract numeric value near a label using vision"
     )
-    async def extract_numeric_value_near_label(
+    def extract_numeric_value_near_label(
         self,
         image_path: Annotated[str, "Path to image file"],
         label: Annotated[str, "Label to search for in image"],
     ) -> str:
         """Use Azure vision to extract numeric value from an image."""
-        from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
-        chat_service = kernel.get_service(type=ChatCompletionClientBase)
-
+        # SK doesn't natively support image_url in chat, so we use the OpenAI client directly.
         with open(image_path, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -287,7 +286,7 @@ class ExcelPlugin:
     @kernel_function(
         description="Extract value from Excel using DOM"
     )
-    def extract_excel_value_dom(
+    async def extract_excel_value_dom(
         self,
         excel_url: Annotated[str, "URL of Excel workbook"],
         label: Annotated[str, "Label to search for"],
@@ -301,18 +300,18 @@ class ExcelPlugin:
         try:
             print(">>> [Excel:dom] launching...")
 
-            with sync_playwright() as p:
-                context, page = self._open_excel_page(p, excel_url)
+            async with async_playwright() as p:
+                context, page = await self._open_excel_page(p, excel_url)
 
                 # Always screenshot for debugging
-                page.screenshot(path=EXCEL_SCREENSHOT_PATH, full_page=True)
+                await page.screenshot(path=EXCEL_SCREENSHOT_PATH, full_page=True)
                 try:
                     size = os.path.getsize(EXCEL_SCREENSHOT_PATH)
                     print(f">>> [Excel:dom] screenshot saved: {EXCEL_SCREENSHOT_PATH} ({size} bytes)")
                 except Exception:
                     print(f">>> [Excel:dom] screenshot saved: {EXCEL_SCREENSHOT_PATH}")
 
-                probe = page.evaluate(
+                probe = await page.evaluate(
                     """
                     (label) => {
                         const elems = document.querySelectorAll('div, span, td, [role="gridcell"]');
@@ -375,19 +374,19 @@ class ExcelPlugin:
         finally:
             try:
                 if page:
-                    page.close()
+                    await page.close()
             except Exception:
                 pass
             try:
                 if context:
-                    context.close()
+                    await context.close()
             except Exception:
                 pass
 
     @kernel_function(
         description="Extract value from Excel using vision"
     )
-    def extract_excel_value_vision(
+    async def extract_excel_value_vision(
         self,
         excel_url: Annotated[str, "URL of Excel workbook"],
         label: Annotated[str, "Label to search for"],
@@ -401,23 +400,22 @@ class ExcelPlugin:
         try:
             print(">>> [Excel:vision] launching...")
 
-            with sync_playwright() as p:
-                context, page = self._open_excel_page(p, excel_url)
+            async with async_playwright() as p:
+                context, page = await self._open_excel_page(p, excel_url)
 
-                page.screenshot(path=EXCEL_SCREENSHOT_PATH, full_page=True)
+                await page.screenshot(path=EXCEL_SCREENSHOT_PATH, full_page=True)
                 try:
                     size = os.path.getsize(EXCEL_SCREENSHOT_PATH)
                     print(f">>> [Excel:vision] screenshot saved: {EXCEL_SCREENSHOT_PATH} ({size} bytes)")
                 except Exception:
                     print(f">>> [Excel:vision] screenshot saved: {EXCEL_SCREENSHOT_PATH}")
 
-                # Extract using vision plugin
-                vision_plugin = kernel.get_plugin("vision")
-                result = json.loads(vision_plugin["extract_numeric_value_near_label"](
+                # Extract using vision plugin (sync method — direct call)
+                result = json.loads(_vision.extract_numeric_value_near_label(
                     image_path=EXCEL_SCREENSHOT_PATH,
                     label=label
                 ).strip())
-                
+
                 val = result.get("value")
                 print(f">>> [Excel:vision] extracted value for '{label}': {val}")
 
@@ -430,50 +428,55 @@ class ExcelPlugin:
         finally:
             try:
                 if page:
-                    page.close()
+                    await page.close()
             except Exception:
                 pass
             try:
                 if context:
-                    context.close()
+                    await context.close()
             except Exception:
                 pass
 
-    def _open_excel_page(self, p, excel_url: str):
+    async def _open_excel_page(self, p, excel_url: str):
         """Internal helper: open Excel Online workbook."""
-        context = p.chromium.launch_persistent_context(
+        context = await p.chromium.launch_persistent_context(
             EDGE_PROFILE,
             channel="msedge",
             headless=False,
             args=["--no-first-run", "--disable-extensions"],
         )
-        page = context.new_page()
+        page = await context.new_page()
 
         page.set_default_timeout(120_000)
 
-        page.goto(excel_url, wait_until="load", timeout=120_000)
-        page.wait_for_timeout(12_000)
+        await page.goto(excel_url, wait_until="load", timeout=120_000)
+        await page.wait_for_timeout(12_000)
 
         try:
-            page.wait_for_selector("canvas, [role='grid'], [role='gridcell']", timeout=15_000)
+            await page.wait_for_selector("canvas, [role='grid'], [role='gridcell']", timeout=15_000)
             print(">>> [Excel] readiness selector seen")
         except Exception:
             print(">>> [Excel] readiness selector NOT seen (continuing anyway)")
 
         try:
             print(">>> [Excel] page.url:", page.url)
-            print(">>> [Excel] page.title:", page.title())
+            print(">>> [Excel] page.title:", await page.title())
         except Exception:
             pass
 
         return context, page
 
 
-# Register plugins with kernel
-kernel.add_plugin(TaskPlugin(), plugin_name="task")
-kernel.add_plugin(CMDPlugin(), plugin_name="cmd")
-kernel.add_plugin(VisionPlugin(), plugin_name="vision")
-kernel.add_plugin(ExcelPlugin(), plugin_name="excel")
+# Register plugins with kernel (store instances for direct method calls)
+_task = TaskPlugin()
+_cmd = CMDPlugin()
+_vision = VisionPlugin()
+_excel = ExcelPlugin()
+
+kernel.add_plugin(_task, plugin_name="task")
+kernel.add_plugin(_cmd, plugin_name="cmd")
+kernel.add_plugin(_vision, plugin_name="vision")
+kernel.add_plugin(_excel, plugin_name="excel")
 
 
 # ---------------------------------------------------------------------
@@ -495,44 +498,26 @@ ACTIONS = [
 async def decide_next_action(world: WorldState) -> str:
     """Use SK to decide the next action."""
     print("\n>>> [Orchestrator Agent] deciding next action...")
-    
-    from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
-    chat_service = kernel.get_service(type=ChatCompletionClientBase)
 
-    messages = [
+    system = (
+        "You are an Orchestrator Agent.\n"
+        "Decide the NEXT action only.\n"
+        "Do not repeat actions that would not change the world.\n"
+        "If stuck or uncertain, choose escalate.\n"
+        'Return JSON: { "action": string }'
+    )
+    user = json.dumps(
         {
-            "role": "system",
-            "content": (
-                "You are an Orchestrator Agent.\n"
-                "Decide the NEXT action only.\n"
-                "Do not repeat actions that would not change the world.\n"
-                "If stuck or uncertain, choose escalate.\n"
-                "Return JSON: { \"action\": string }"
-            ),
+            "goal": world.goal,
+            "world_state": world.__dict__,
+            "recent_steps": world.history[-4:],
+            "available_actions": ACTIONS,
         },
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "goal": world.goal,
-                    "world_state": world.__dict__,
-                    "recent_steps": world.history[-4:],
-                    "available_actions": ACTIONS,
-                },
-                indent=2,
-                default=str,
-            ),
-        },
-    ]
-
-    print(">>> [Orchestrator Agent] messages:\n", messages)
-    
-    response = await chat_service.get_chat_message_content(
-        chat_history=[{"role": m["role"], "content": m["content"]} for m in messages],
-        settings=None
+        indent=2,
+        default=str,
     )
 
-    result = response.content
+    result = await _call_llm(system, user)
     print(">>> [Orchestrator Agent] raw response:", result)
 
     decision = safe_json_parse(result)
@@ -545,48 +530,39 @@ async def decide_next_action(world: WorldState) -> str:
 
 async def run(prompt: str):
     """Main orchestration loop."""
-    # Parse goal using SK plugin
-    task_plugin = kernel.get_plugin("task")
-    goal_json = task_plugin["parse_goal"](prompt=prompt)
+    # Parse goal via direct method call on plugin instance
+    goal_json = await _task.parse_goal(prompt=prompt)
     world = WorldState(goal=json.loads(goal_json))
 
-    # ✅ APPLY URL NORMALIZATION ONCE (TASK LAYER)
-    world.goal["excel"]["url"] = task_plugin["normalize_excel_url"](
-        url=world.goal["excel"]["url"]
-    )
+    # APPLY URL NORMALIZATION ONCE (TASK LAYER)
+    world.goal["excel"]["url"] = _task.normalize_excel_url(url=world.goal["excel"]["url"])
 
     print("\n>>> Parsed goal:\n", json.dumps(world.goal, indent=2))
 
-    cmd_plugin = kernel.get_plugin("cmd")
-    vision_plugin = kernel.get_plugin("vision")
-    excel_plugin = kernel.get_plugin("excel")
-
     while True:
         action = await decide_next_action(world)
-        print(f"\n🧠 Orchestrator decided: {action}")
+        print(f"\n[Brain] Orchestrator decided: {action}")
 
-        # ✅ Deduplicated episodic memory
+        # Deduplicated episodic memory
         if not world.history or world.history[-1]["action"] != action:
             world.history.append({"action": action})
 
         if action == "render_cmd_file":
-            cmd_plugin["render_file_in_cmd"](
-                file_path=world.goal["cmd"]["file_path"]
-            )
+            _cmd.render_file_in_cmd(file_path=world.goal["cmd"]["file_path"])
             world.cmd_rendered = True
 
         elif action == "capture_cmd":
-            world.cmd_image = cmd_plugin["capture_cmd"]()
+            world.cmd_image = _cmd.capture_cmd()
 
         elif action == "extract_cmd_value":
-            result = json.loads(vision_plugin["extract_numeric_value_near_label"](
+            result = json.loads(_vision.extract_numeric_value_near_label(
                 image_path=world.cmd_image,
                 label=world.goal["cmd"]["label"]
             ))
             world.cmd_value = float(result["value"])
 
         elif action == "extract_excel_dom":
-            res = json.loads(excel_plugin["extract_excel_value_dom"](
+            res = json.loads(await _excel.extract_excel_value_dom(
                 excel_url=world.goal["excel"]["url"],
                 label=world.goal["excel"]["label"]
             ))
@@ -595,7 +571,7 @@ async def run(prompt: str):
                 world.excel_value = res["value"]
 
         elif action == "extract_excel_vision":
-            res = json.loads(excel_plugin["extract_excel_value_vision"](
+            res = json.loads(await _excel.extract_excel_value_vision(
                 excel_url=world.goal["excel"]["url"],
                 label=world.goal["excel"]["label"]
             ))
@@ -612,7 +588,7 @@ async def run(prompt: str):
             }
 
         elif action == "finish":
-            print("\n✅ FINAL RESULT")
+            print("\n[OK] FINAL RESULT")
             print(json.dumps(world.comparison, indent=2))
             return
 
@@ -628,11 +604,11 @@ async def run(prompt: str):
 if __name__ == "__main__":
     import asyncio
 
-    user_prompt = r"""
-Find TOTAL in:
-"C:\Users\fatemeh.torabi.asr\small_vsc_projects\quick_python_project\quick_python_project\hybrid_orchestration_demo\data\invoice.txt"
-and FV in the spreadsheet at
-https://avanade-my.sharepoint.com/:x:/r/personal/fatemeh_torabi_asr_avanade_com/Documents/test_data_folder/Book.xlsx
-Compare with tolerance 0.01.
-"""
+    _invoice = os.path.join(BASE_DIR, "data", "invoice.txt")
+    user_prompt = (
+        f'Find TOTAL in: "{_invoice}"\n'
+        "and FV in the spreadsheet at\n"
+        "https://avanade-my.sharepoint.com/:x:/r/personal/fatemeh_torabi_asr_avanade_com/Documents/test_data_folder/Book.xlsx\n"
+        "Compare with tolerance 0.01."
+    )
     asyncio.run(run(user_prompt))
